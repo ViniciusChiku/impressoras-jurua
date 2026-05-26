@@ -1,8 +1,78 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 body {
   margin: 0;
-  background-color: #f1f5f9;
+  background-color: #F4F7FC;
+  font-family: 'Outfit', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@layer components {
+  .input-field {
+    @apply w-full p-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-simpress-blue/20 focus:border-simpress-blue transition-all duration-300 text-slate-700 disabled:bg-slate-50 disabled:text-slate-400 text-sm bg-white;
+  }
+  
+  .btn-primary {
+    @apply bg-simpress-magenta hover:bg-simpress-magenta/90 text-white font-bold py-3 px-6 rounded-xl transition-all duration-300 transform active:scale-95 shadow-md shadow-simpress-magenta/10 hover:shadow-lg hover:shadow-simpress-magenta/20 flex items-center justify-center gap-2;
+  }
+
+  .btn-secondary {
+    @apply bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold py-3 px-6 rounded-xl transition-all duration-300 transform active:scale-95 shadow-sm flex items-center justify-center gap-2;
+  }
+
+  .btn-corporate {
+    @apply bg-simpress-blue hover:bg-simpress-blue/90 text-white font-bold py-3 px-6 rounded-xl transition-all duration-300 transform active:scale-95 shadow-md shadow-simpress-blue/10 hover:shadow-lg hover:shadow-simpress-blue/20 flex items-center justify-center gap-2;
+  }
+}
+
+/* Animations for LGPD Banner and Modals */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(15px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulseSoft {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-pulse-soft {
+  animation: pulseSoft 3s ease-in-out infinite;
+}
+
+/* Custom Scrollbar for modern look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }
