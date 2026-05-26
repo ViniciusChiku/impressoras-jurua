@@ -3,13 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { 
     LogOut, PlusCircle, Download, Search, PrinterIcon, 
     FileUp, ShieldCheck, ShieldOff, ArrowUp, ArrowDown, 
-    Copy, Shield, Database, Barcode as BarcodeIcon, Filter
+    Copy, Shield, Database, Barcode as BarcodeIcon, Filter, Sparkles
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 import StatusBadge from '../components/StatusBadge';
 import ImportExcelModal from '../components/ImportExcelModal';
 import BarcodeScannerModal from '../components/BarcodeScannerModal';
+import GeminiCommandModal from '../components/GeminiCommandModal';
+import { processCommandWithGemini } from '../services/gemini';
 
 export default function DashboardScreen({ 
     currentUser, 
@@ -28,7 +30,63 @@ export default function DashboardScreen({
     const [showImportModal, setShowImportModal] = useState(false);
     const [showFiltersMobile, setShowFiltersMobile] = useState(false);
     const [showDashboardScanner, setShowDashboardScanner] = useState(false);
+    const [showGeminiModal, setShowGeminiModal] = useState(false);
+    const [isProcessingGemini, setIsProcessingGemini] = useState(false);
     const [sortConfig, setSortConfig] = useState({ key: 'departamento', direction: 'asc' });
+
+    // Envia o comando e foto do usuário para o Gemini
+    const handleProcessGeminiCommand = async (apiKey, commandText, imageFile) => {
+        setIsProcessingGemini(true);
+        try {
+            const result = await processCommandWithGemini(apiKey, commandText, imageFile, printers);
+            
+            if (result.error) {
+                showNotification(result.error, 'error', 5000);
+                setIsProcessingGemini(false);
+                return;
+            }
+
+            const serialToFind = (result.serial || '').toUpperCase();
+            if (!serialToFind) {
+                showNotification('A IA não conseguiu detectar nenhum número de série.', 'error');
+                setIsProcessingGemini(false);
+                return;
+            }
+
+            // Procura se a impressora existe na base de dados
+            const existingPrinter = printers.find(p => (p.serial || '').toUpperCase() === serialToFind);
+            
+            // Dados estruturados que pré-preencherão o formulário
+            const prefilledData = {
+                serial: serialToFind,
+                model: result.model || existingPrinter?.model || '',
+                ip: result.ip || existingPrinter?.ip || '',
+                location: result.location || existingPrinter?.location || '',
+                departamento: result.departamento || existingPrinter?.departamento || '',
+                status: result.status || existingPrinter?.status || 'Funcionando',
+                observacao: result.observacao || existingPrinter?.observacao || '',
+                swap: result.swap || null,
+                contador: result.contador !== undefined && result.contador !== null ? result.contador : (existingPrinter?.contador || '')
+            };
+
+            setShowGeminiModal(false);
+            showNotification('Dados processados! Revise o formulário e clique em Salvar.', 'success', 5000);
+
+            if (existingPrinter) {
+                // Se existe, navega para Edição passando as novas sugestões de IA no state
+                navigate(`/impressora/editar/${existingPrinter.id}`, { state: { prefilledData } });
+            } else {
+                // Se não existe, navega para Criação passando as novas sugestões no state
+                navigate('/impressora/nova', { state: { prefilledData } });
+            }
+
+        } catch (error) {
+            console.error(error);
+            showNotification(error.message || 'Erro ao conectar com a inteligência artificial.', 'error');
+        } finally {
+            setIsProcessingGemini(false);
+        }
+    };
 
 
 
@@ -58,7 +116,9 @@ export default function DashboardScreen({
             Departamento: p.departamento, 
             Local: p.location, 
             IP: p.ip, 
-            Status: p.status
+            Status: p.status,
+            Contador: p.contador || '',
+            Data_Contador: p.dataContador || ''
         }));
         const ws = XLSX.utils.json_to_sheet(data);
         const wb = XLSX.utils.book_new();
@@ -277,6 +337,13 @@ export default function DashboardScreen({
                                             <PlusCircle size={15}/> Adicionar Impressora
                                         </button>
                                         <button 
+                                            onClick={() => setShowGeminiModal(true)} 
+                                            className="w-full sm:w-auto bg-violet-600 hover:bg-violet-750 text-white font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all duration-300 shadow-md shadow-violet-600/10 transform hover:scale-[1.01] text-xs"
+                                            title="Digitar ou tirar fotos e dar comandos de IA"
+                                        >
+                                            <Sparkles size={15} className="text-white animate-pulse" /> Comando IA
+                                        </button>
+                                        <button 
                                             onClick={() => setShowImportModal(true)} 
                                             className="w-full sm:w-auto bg-simpress-blue hover:bg-simpress-blue/90 text-white font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all duration-300 shadow-md shadow-simpress-blue/10 transform hover:scale-[1.01] text-xs"
                                         >
@@ -301,6 +368,14 @@ export default function DashboardScreen({
                                 setSearchTerm(textLido);
                                 showNotification(`Filtro aplicado para o código: ${textLido}`, 'success');
                             }} 
+                        />
+
+                        {/* Gemini Command Modal */}
+                        <GeminiCommandModal 
+                            isOpen={showGeminiModal}
+                            onClose={() => setShowGeminiModal(false)}
+                            onProcess={handleProcessGeminiCommand}
+                            isProcessing={isProcessingGemini}
                         />
 
                         {/* Tabela de Inventário */}
@@ -440,6 +515,18 @@ export default function DashboardScreen({
                     <Shield size={13}/> Termos de Privacidade & Conformidade LGPD
                 </button>
             </footer>
+
+            {/* Floating Action Button (FAB) for AI Command on Mobile */}
+            {isAdmin && (
+                <button
+                    type="button"
+                    onClick={() => setShowGeminiModal(true)}
+                    className="lg:hidden fixed bottom-6 right-6 z-40 bg-gradient-to-r from-violet-600 to-indigo-600 text-white w-14 h-14 rounded-full shadow-2xl shadow-violet-600/40 flex items-center justify-center transition-all duration-300 hover:scale-105 active:scale-95 border border-violet-500/20 animate-pulse-soft hover:shadow-violet-600/60"
+                    title="Comando IA"
+                >
+                    <Sparkles className="text-white" size={24} />
+                </button>
+            )}
         </div>
     );
 }

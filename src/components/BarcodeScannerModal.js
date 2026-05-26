@@ -11,6 +11,10 @@ export default function BarcodeScannerModal({ isOpen, onClose, onScan }) {
             return;
         }
 
+        // Bloqueia scroll da página de fundo para manter o foco na câmera
+        const originalOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+
         const scanner = new Html5QrcodeScanner(
             "reader",
             { fps: 10, qrbox: { width: 250, height: 100 } },
@@ -29,6 +33,7 @@ export default function BarcodeScannerModal({ isOpen, onClose, onScan }) {
         );
 
         return () => {
+            document.body.style.overflow = originalOverflow || 'unset';
             scanner.clear().catch((error) => {
                 console.warn("Erro ao limpar scanner:", error);
             });
@@ -39,8 +44,8 @@ export default function BarcodeScannerModal({ isOpen, onClose, onScan }) {
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-center z-[9999] p-4">
-            <div className="bg-white p-4 rounded-xl shadow-xl w-full max-w-md relative">
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex flex-col items-center justify-start md:justify-center z-[9999] p-4 overflow-y-auto pt-6 md:pt-4">
+            <div className="bg-white p-4 rounded-xl shadow-xl w-full max-w-md relative mt-2 md:mt-0">
                 <button onClick={onClose} className="absolute top-2 right-2 text-slate-400 hover:text-[#da292e] z-10 transition-colors">
                     <XCircle size={28} />
                 </button>

@@ -1,11 +1,18 @@
 import React from 'react';
-import { Camera, Copy } from 'lucide-react';
+import { Camera, Copy, Sparkles } from 'lucide-react';
 
-export default function Field({ label, icon: Icon, onCopy, onScan, children }) {
+export default function Field({ label, icon: Icon, onCopy, onScan, isSuggested, children }) {
     return (
         <div className="w-full">
             <div className="flex justify-between items-center mb-1.5">
-                <label className="block text-sm font-medium text-slate-700">{label}</label>
+                <div className="flex items-center gap-1.5">
+                    <label className="block text-sm font-medium text-slate-700">{label}</label>
+                    {isSuggested && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[9px] font-extrabold uppercase tracking-wider bg-violet-100 text-violet-700 border border-violet-200/50 animate-pulse">
+                            <Sparkles size={8} className="fill-violet-700" /> IA
+                        </span>
+                    )}
+                </div>
                 <div className="flex gap-2">
                     {onScan && (
                         <button 
@@ -36,3 +43,4 @@ export default function Field({ label, icon: Icon, onCopy, onScan, children }) {
         </div>
     );
 }
+

@@ -133,9 +133,12 @@ function AppContent() {
             return false;
         }
         
+        // Destrutura o swap para evitar salvá-lo no documento principal
+        const { swap, ...cleanedPrinterData } = printerData;
+
         // Validação de número de série duplicado
-        if (printerData.serial) {
-            const serialParaVerificar = printerData.serial;
+        if (cleanedPrinterData.serial) {
+            const serialParaVerificar = cleanedPrinterData.serial;
             const q = query(collection(db, printersCollectionPath), where("serial", "==", serialParaVerificar));
             try {
                 const querySnapshot = await getDocs(q);
@@ -162,12 +165,31 @@ function AppContent() {
 
         try {
             if (printerIdToUpdate) {
-                await updateDoc(doc(db, printersCollectionPath, printerIdToUpdate), printerData);
+                await updateDoc(doc(db, printersCollectionPath, printerIdToUpdate), cleanedPrinterData);
                 showNotification('Impressora atualizada com sucesso!', 'success');
             } else {
-                await addDoc(collection(db, printersCollectionPath), printerData);
+                await addDoc(collection(db, printersCollectionPath), cleanedPrinterData);
                 showNotification('Impressora cadastrada com sucesso!', 'success');
             }
+
+            // Executa a troca bidirecional caso exista dados de swap da IA
+            if (swap && swap.outgoingSerial) {
+                const outgoingPrinter = printers.find(
+                    p => String(p.serial).trim().toUpperCase() === String(swap.outgoingSerial).trim().toUpperCase()
+                );
+                if (outgoingPrinter) {
+                    const outgoingRef = doc(db, printersCollectionPath, outgoingPrinter.id);
+                    await updateDoc(outgoingRef, {
+                        status: swap.status || 'Backup',
+                        location: swap.location || 'Estoque de Manutenção',
+                        departamento: swap.departamento || 'Manutenção',
+                        ip: swap.ip || 'USB',
+                        observacao: swap.observacao || `Substituída automaticamente pelo ativo ${cleanedPrinterData.serial}.`
+                    });
+                    showNotification(`Troca Concluída! Impressora antiga (${swap.outgoingSerial}) movida para ${swap.location || 'Estoque'}.`, 'success', 5000);
+                }
+            }
+
             return true;
         } catch (error) {
             console.error("Erro ao salvar:", error);

@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { doc, getDoc } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { 
     Barcode, Network, Printer as PrinterIcon, Users, 
-    Building, Trash2, RotateCw, AlertTriangle
+    Building, Trash2, RotateCw, AlertTriangle, Sparkles, Hash, Calendar
 } from 'lucide-react';
 
 import { db, storage, printersCollectionPath } from '../services/firebase';
@@ -34,6 +34,8 @@ export default function PrinterFormScreen({
     const navigate = useNavigate();
     const { idImpressora } = useParams();
     const isEditMode = !!idImpressora;
+    const locationState = useLocation();
+    const prefilledData = locationState.state?.prefilledData;
 
     const [isLoadingPrinterDetails, setIsLoadingPrinterDetails] = useState(isEditMode);
     const [isUploading, setIsUploading] = useState(false);
@@ -47,6 +49,23 @@ export default function PrinterFormScreen({
     const [departamento, setDepartamento] = useState('');
     const [status, setStatus] = useState('Funcionando');
     const [observacao, setObservacao] = useState('');
+    const [contador, setContador] = useState('');
+
+    const getCurrentLocalDateString = () => {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, '0');
+        const dd = String(today.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+    };
+
+    const [dataContador, setDataContador] = useState(getCurrentLocalDateString());
+
+    // Original data fetched from DB (to compare and highlight AI changes)
+    const [originalData, setOriginalData] = useState(null);
+
+    // Swap data representing the outgoing printer to update on form save
+    const [swapData, setSwapData] = useState(null);
 
     // Image States
     const [imageFile, setImageFile] = useState(null);
@@ -62,13 +81,20 @@ export default function PrinterFormScreen({
                     const docSnap = await getDoc(printerDocRef);
                     if (docSnap.exists()) {
                         const data = docSnap.data();
-                        setModel(data.model || '');
-                        setLocation(data.location || '');
-                        setIp(data.ip || '');
-                        setSerial(data.serial || '');
-                        setDepartamento(data.departamento || '');
-                        setStatus(data.status || 'Funcionando');
-                        setObservacao(data.observacao || '');
+                        setOriginalData(data);
+                        
+                        // Prefill values from AI command state if available, otherwise fallback to DB data
+                        setModel(prefilledData?.model !== undefined ? prefilledData.model : (data.model || ''));
+                        setLocation(prefilledData?.location !== undefined ? prefilledData.location : (data.location || ''));
+                        setIp(prefilledData?.ip !== undefined ? prefilledData.ip : (data.ip || ''));
+                        setSerial(prefilledData?.serial !== undefined ? prefilledData.serial : (data.serial || ''));
+                        setDepartamento(prefilledData?.departamento !== undefined ? prefilledData.departamento : (data.departamento || ''));
+                        setStatus(prefilledData?.status !== undefined ? prefilledData.status : (data.status || 'Funcionando'));
+                        setObservacao(prefilledData?.observacao !== undefined ? prefilledData.observacao : (data.observacao || ''));
+                        setSwapData(prefilledData?.swap || null);
+                        setContador(prefilledData?.contador !== undefined ? prefilledData.contador : (data.contador || ''));
+                        setDataContador(data.dataContador || getCurrentLocalDateString());
+                        
                         setExistingImageUrl(data.contadorImageUrl || '');
                         setImageFile(null);
                         setImagePreviewUrl('');
@@ -84,14 +110,45 @@ export default function PrinterFormScreen({
                     setIsLoadingPrinterDetails(false);
                 }
             } else {
-                setModel(''); setLocation(''); setIp(''); setSerial(''); setDepartamento('');
-                setStatus('Funcionando'); setObservacao('');
+                if (prefilledData) {
+                    setModel(prefilledData.model || '');
+                    setLocation(prefilledData.location || '');
+                    setIp(prefilledData.ip || '');
+                    setSerial(prefilledData.serial || '');
+                    setDepartamento(prefilledData.departamento || '');
+                    setStatus(prefilledData.status || 'Funcionando');
+                    setObservacao(prefilledData.observacao || '');
+                    setSwapData(prefilledData.swap || null);
+                    setContador(prefilledData.contador || '');
+                    setDataContador(getCurrentLocalDateString());
+                } else {
+                    setModel(''); setLocation(''); setIp(''); setSerial(''); setDepartamento('');
+                    setStatus('Funcionando'); setObservacao('');
+                    setSwapData(null);
+                    setContador('');
+                    setDataContador(getCurrentLocalDateString());
+                }
                 setImageFile(null); setImagePreviewUrl(''); setExistingImageUrl('');
                 setIsLoadingPrinterDetails(false);
             }
         };
         fetchPrinterData();
-    }, [isEditMode, idImpressora, navigate, showNotification]);
+    }, [isEditMode, idImpressora, navigate, showNotification, prefilledData]);
+
+    const isPrefilled = (fieldName, currentValue) => {
+        if (!prefilledData) return false;
+        const suggestedValue = prefilledData[fieldName];
+        if (suggestedValue === undefined || suggestedValue === null) return false;
+        
+        if (isEditMode) {
+            const originalVal = originalData ? (originalData[fieldName] || '') : '';
+            return String(currentValue).trim().toUpperCase() === String(suggestedValue).trim().toUpperCase() &&
+                   String(originalVal).trim().toUpperCase() !== String(suggestedValue).trim().toUpperCase();
+        } else {
+            return String(currentValue).trim().toUpperCase() === String(suggestedValue).trim().toUpperCase() && 
+                   String(suggestedValue).trim() !== '';
+        }
+    };
 
     const handleImageFileChange = (e) => {
         const file = e.target.files[0];
@@ -167,7 +224,9 @@ export default function PrinterFormScreen({
             departamento: departamentoTrimmed ? departamentoTrimmed.charAt(0).toUpperCase() + departamentoTrimmed.slice(1).toLowerCase() : '',
             status: status,
             observacao: observacao.trim(),
-            contadorImageUrl: imageUrlToSave
+            contadorImageUrl: imageUrlToSave,
+            swap: swapData,
+            contador: contador ? Number(contador) : null
         };
 
         const success = await handleSavePrinterProp(dataToSave, isEditMode ? idImpressora : null);
@@ -214,15 +273,26 @@ export default function PrinterFormScreen({
                 
                 <form onSubmit={handleSubmitFormulario} className="space-y-5">
                     
+                    {swapData && (
+                        <div className="p-4 bg-violet-50 text-violet-800 rounded-2xl border border-violet-200/50 flex items-start gap-3 animate-pulse-soft">
+                            <Sparkles className="flex-shrink-0 text-violet-600 mt-0.5" size={18} />
+                            <div className="text-xs">
+                                <strong className="font-extrabold uppercase tracking-wider block mb-1">Substituição Inteligente IA</strong>
+                                Ao salvar, a impressora que estava ativa no setor (Série <span className="font-extrabold">{swapData.outgoingSerial}</span>) será atualizada automaticamente: status será alterado para <span className="font-extrabold">{swapData.status}</span> e sua localização será movida para <span className="font-extrabold">{swapData.location}</span>.
+                            </div>
+                        </div>
+                    )}
+                    
                     <Field 
                         label="Número de Série" 
                         icon={Barcode} 
                         onCopy={serial ? () => handleCopyField(serial, 'Nº de Série') : null}
                         onScan={isAdmin ? () => setShowScanner(true) : null}
+                        isSuggested={isPrefilled('serial', serial)}
                     >
                         <input 
                             disabled={!isAdmin} 
-                            className={estiloCampo} 
+                            className={`${estiloCampo} ${isPrefilled('serial', serial) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={serial} 
                             onChange={e => setSerial(e.target.value)} 
                             required 
@@ -234,10 +304,11 @@ export default function PrinterFormScreen({
                         label="Endereço IP / Porta" 
                         icon={Network}
                         onCopy={ip ? () => handleCopyField(ip, 'IP') : null}
+                        isSuggested={isPrefilled('ip', ip)}
                     >
                         <input 
                             disabled={!isAdmin} 
-                            className={estiloCampo} 
+                            className={`${estiloCampo} ${isPrefilled('ip', ip) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={ip} 
                             onChange={e => setIp(e.target.value)} 
                             required 
@@ -245,10 +316,10 @@ export default function PrinterFormScreen({
                         />
                     </Field>
 
-                    <Field label="Modelo da Impressora" icon={PrinterIcon}>
+                    <Field label="Modelo da Impressora" icon={PrinterIcon} isSuggested={isPrefilled('model', model)}>
                         <input 
                             disabled={!isAdmin} 
-                            className={estiloCampo} 
+                            className={`${estiloCampo} ${isPrefilled('model', model) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={model} 
                             onChange={e => setModel(e.target.value)} 
                             required 
@@ -256,20 +327,20 @@ export default function PrinterFormScreen({
                         />
                     </Field>
 
-                    <Field label="Departamento" icon={Users}>
+                    <Field label="Departamento" icon={Users} isSuggested={isPrefilled('departamento', departamento)}>
                         <input 
                             disabled={!isAdmin} 
-                            className={estiloCampo} 
+                            className={`${estiloCampo} ${isPrefilled('departamento', departamento) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={departamento} 
                             onChange={e => setDepartamento(e.target.value)} 
                             placeholder="Ex: Controladoria"
                         />
                     </Field>
 
-                    <Field label="Local / Sala Física" icon={Building}>
+                    <Field label="Local / Sala Física" icon={Building} isSuggested={isPrefilled('location', location)}>
                         <input 
                             disabled={!isAdmin} 
-                            className={estiloCampo} 
+                            className={`${estiloCampo} ${isPrefilled('location', location) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={location} 
                             onChange={e => setLocation(e.target.value)} 
                             required 
@@ -277,10 +348,10 @@ export default function PrinterFormScreen({
                         />
                     </Field>
 
-                    <Field label="Status Operacional">
+                    <Field label="Status Operacional" isSuggested={isPrefilled('status', status)}>
                         <select 
                             disabled={!isAdmin} 
-                            className={estiloCampo} 
+                            className={`${estiloCampo} ${isPrefilled('status', status) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={status} 
                             onChange={e => setStatus(e.target.value)}
                         >
@@ -292,13 +363,41 @@ export default function PrinterFormScreen({
                         </select>
                     </Field>
 
+                    <Field label="Contador de Páginas" icon={Hash} isSuggested={isPrefilled('contador', contador)}>
+                        <input 
+                            disabled={!isAdmin} 
+                            type="number"
+                            className={`${estiloCampo} ${isPrefilled('contador', contador) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
+                            value={contador} 
+                            onChange={e => setContador(e.target.value)} 
+                            placeholder="Ex: 24500 (Total de páginas impressas)"
+                        />
+                    </Field>
+
+                    <Field label="Data da Leitura do Contador" icon={Calendar}>
+                        <input 
+                            disabled={!isAdmin} 
+                            type="date"
+                            className={estiloCampo} 
+                            value={dataContador} 
+                            onChange={e => setDataContador(e.target.value)} 
+                        />
+                    </Field>
+
                     {/* Observações com Alerta LGPD */}
                     <div className="w-full">
-                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">Observações Adicionais</label>
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                            <label className="block text-sm font-semibold text-slate-700">Observações Adicionais</label>
+                            {isPrefilled('observacao', observacao) && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[9px] font-extrabold uppercase tracking-wider bg-violet-100 text-violet-700 border border-violet-200/50 animate-pulse">
+                                    <Sparkles size={8} className="fill-violet-700" /> IA
+                                </span>
+                            )}
+                        </div>
                         <textarea 
                             disabled={!isAdmin} 
                             rows="3" 
-                            className={`${estiloCampo} resize-y min-h-[90px]`} 
+                            className={`${estiloCampo} resize-y min-h-[90px] ${isPrefilled('observacao', observacao) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
                             value={observacao} 
                             onChange={e => setObservacao(e.target.value)} 
                             placeholder="Ex: Impressora configurada com duplex automático..."

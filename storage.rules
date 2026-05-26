@@ -1,5 +1,5 @@
 rules_version = '2';
-service cloud.storage {
+service firebase.storage {
   match /b/{bucket}/o {
     
     // Regra de segurança para a pasta de imagens dos contadores das impressoras
@@ -9,9 +9,10 @@ service cloud.storage {
       allow read: if request.auth != null;
       
       // Permitir upload e exclusão de fotos de contadores apenas para o e-mail administrador
-      allow write: if request.auth != null && (
-        request.auth.token.email == 'vini.chiku123@gmail.com'
-      );
+      allow write: if request.auth != null 
+        && request.auth.token.email == 'vini.chiku123@gmail.com'
+        && request.resource.size < 5 * 1024 * 1024 // Limita arquivos a 5MB
+        && request.resource.contentType.matches('image/.*'); // Permite apenas imagens
     }
   }
 }
