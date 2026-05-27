@@ -23,3 +23,4 @@ export const storage = getStorage(fbApp);
 export const appId = process.env.REACT_APP_FIREBASE_APP_ID || 'printer-manager-app';
 export const ADMIN_EMAIL = process.env.REACT_APP_ADMIN_EMAIL || 'vini.chiku123@gmail.com';
 export const printersCollectionPath = `artifacts/${appId}/public/data/printers`;
+export const questsCollectionPath = `artifacts/${appId}/public/data/quests`;

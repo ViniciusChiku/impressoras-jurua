@@ -49,7 +49,9 @@ export default function PrinterFormScreen({
     const [departamento, setDepartamento] = useState('');
     const [status, setStatus] = useState('Funcionando');
     const [observacao, setObservacao] = useState('');
-    const [contador, setContador] = useState('');
+    const [contadorPB, setContadorPB] = useState('');
+    const [contadorColor, setContadorColor] = useState('');
+    const [tipo, setTipo] = useState('PB');
 
     const getCurrentLocalDateString = () => {
         const today = new Date();
@@ -92,7 +94,15 @@ export default function PrinterFormScreen({
                         setStatus(prefilledData?.status !== undefined ? prefilledData.status : (data.status || 'Funcionando'));
                         setObservacao(prefilledData?.observacao !== undefined ? prefilledData.observacao : (data.observacao || ''));
                         setSwapData(prefilledData?.swap || null);
-                        setContador(prefilledData?.contador !== undefined ? prefilledData.contador : (data.contador || ''));
+                        
+                        // Backwards compatibility for multiple counters:
+                        const valPB = prefilledData?.contadorPB !== undefined ? prefilledData.contadorPB : (data.contadorPB !== undefined ? data.contadorPB : (data.contador !== undefined ? data.contador : ''));
+                        const valColor = prefilledData?.contadorColor !== undefined ? prefilledData.contadorColor : (data.contadorColor !== undefined ? data.contadorColor : '');
+                        const valTipo = data.tipo || (String(data.model || '').toLowerCase().includes('color') ? 'Color' : 'PB');
+                        
+                        setContadorPB(valPB);
+                        setContadorColor(valColor);
+                        setTipo(valTipo);
                         setDataContador(data.dataContador || getCurrentLocalDateString());
                         
                         setExistingImageUrl(data.contadorImageUrl || '');
@@ -119,13 +129,20 @@ export default function PrinterFormScreen({
                     setStatus(prefilledData.status || 'Funcionando');
                     setObservacao(prefilledData.observacao || '');
                     setSwapData(prefilledData.swap || null);
-                    setContador(prefilledData.contador || '');
+                    
+                    const valPB = prefilledData.contadorPB !== undefined ? prefilledData.contadorPB : (prefilledData.contador !== undefined ? prefilledData.contador : '');
+                    const valColor = prefilledData.contadorColor !== undefined ? prefilledData.contadorColor : '';
+                    setContadorPB(valPB);
+                    setContadorColor(valColor);
+                    setTipo(String(prefilledData.model || '').toLowerCase().includes('color') ? 'Color' : 'PB');
                     setDataContador(getCurrentLocalDateString());
                 } else {
                     setModel(''); setLocation(''); setIp(''); setSerial(''); setDepartamento('');
                     setStatus('Funcionando'); setObservacao('');
                     setSwapData(null);
-                    setContador('');
+                    setContadorPB('');
+                    setContadorColor('');
+                    setTipo('PB');
                     setDataContador(getCurrentLocalDateString());
                 }
                 setImageFile(null); setImagePreviewUrl(''); setExistingImageUrl('');
@@ -137,11 +154,24 @@ export default function PrinterFormScreen({
 
     const isPrefilled = (fieldName, currentValue) => {
         if (!prefilledData) return false;
-        const suggestedValue = prefilledData[fieldName];
+        let suggestedValue = prefilledData[fieldName];
+        
+        // Treat counter suggestions gracefully
+        if (fieldName === 'contadorPB' && suggestedValue === undefined) {
+            suggestedValue = prefilledData.contador;
+        }
+        
         if (suggestedValue === undefined || suggestedValue === null) return false;
         
         if (isEditMode) {
-            const originalVal = originalData ? (originalData[fieldName] || '') : '';
+            let originalVal = '';
+            if (originalData) {
+                if (fieldName === 'contadorPB') {
+                    originalVal = originalData.contadorPB !== undefined ? originalData.contadorPB : (originalData.contador !== undefined ? originalData.contador : '');
+                } else {
+                    originalVal = originalData[fieldName] || '';
+                }
+            }
             return String(currentValue).trim().toUpperCase() === String(suggestedValue).trim().toUpperCase() &&
                    String(originalVal).trim().toUpperCase() !== String(suggestedValue).trim().toUpperCase();
         } else {
@@ -226,7 +256,11 @@ export default function PrinterFormScreen({
             observacao: observacao.trim(),
             contadorImageUrl: imageUrlToSave,
             swap: swapData,
-            contador: contador ? Number(contador) : null
+            contadorPB: contadorPB ? Number(contadorPB) : null,
+            contadorColor: contadorColor ? Number(contadorColor) : null,
+            tipo: tipo,
+            dataContador: dataContador,
+            contador: contadorPB ? Number(contadorPB) : null // Retrocompatibilidade
         };
 
         const success = await handleSavePrinterProp(dataToSave, isEditMode ? idImpressora : null);
@@ -363,14 +397,42 @@ export default function PrinterFormScreen({
                         </select>
                     </Field>
 
-                    <Field label="Contador de Páginas" icon={Hash} isSuggested={isPrefilled('contador', contador)}>
+                    <Field label="Tipo de Impressora" isSuggested={isPrefilled('tipo', tipo)}>
+                        <select 
+                            disabled={!isAdmin} 
+                            className={`${estiloCampo} ${isPrefilled('tipo', tipo) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
+                            value={tipo} 
+                            onChange={e => {
+                                setTipo(e.target.value);
+                                if (e.target.value === 'PB') {
+                                    setContadorColor('');
+                                }
+                            }}
+                        >
+                            <option value="PB">Monocromática (P&B)</option>
+                            <option value="Color">Colorida</option>
+                        </select>
+                    </Field>
+
+                    <Field label="Contador P&B" icon={Hash} isSuggested={isPrefilled('contadorPB', contadorPB)}>
                         <input 
                             disabled={!isAdmin} 
                             type="number"
-                            className={`${estiloCampo} ${isPrefilled('contador', contador) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
-                            value={contador} 
-                            onChange={e => setContador(e.target.value)} 
-                            placeholder="Ex: 24500 (Total de páginas impressas)"
+                            className={`${estiloCampo} ${isPrefilled('contadorPB', contadorPB) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
+                            value={contadorPB} 
+                            onChange={e => setContadorPB(e.target.value)} 
+                            placeholder="Ex: 24500 (Total de páginas monocromáticas)"
+                        />
+                    </Field>
+
+                    <Field label="Contador Colorido" icon={Hash} isSuggested={isPrefilled('contadorColor', contadorColor)}>
+                        <input 
+                            disabled={!isAdmin || tipo === 'PB'} 
+                            type="number"
+                            className={`${estiloCampo} ${tipo === 'PB' ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : ''} ${isPrefilled('contadorColor', contadorColor) ? 'border-violet-300 bg-violet-50/10 focus:ring-violet-500/20 focus:border-violet-500' : ''}`} 
+                            value={tipo === 'PB' ? '' : contadorColor} 
+                            onChange={e => setContadorColor(e.target.value)} 
+                            placeholder={tipo === 'PB' ? "Desativado para impressora monocromática" : "Ex: 5400 (Total de páginas coloridas)"}
                         />
                     </Field>
 

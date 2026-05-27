@@ -3,9 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { 
     LogOut, PlusCircle, Download, Search, PrinterIcon, 
     FileUp, ShieldCheck, ShieldOff, ArrowUp, ArrowDown, 
-    Copy, Shield, Database, Barcode as BarcodeIcon, Filter, Sparkles
+    Copy, Shield, Database, Barcode as BarcodeIcon, Filter, Sparkles,
+    Trophy, Clock, Check, X, Camera, FileText, AlertCircle, RefreshCw, ChevronRight
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { jsPDF } from 'jspdf';
+
+import { collection, addDoc, doc, updateDoc } from 'firebase/firestore';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage, questsCollectionPath, printersCollectionPath } from '../services/firebase';
 
 import StatusBadge from '../components/StatusBadge';
 import ImportExcelModal from '../components/ImportExcelModal';
@@ -19,6 +25,8 @@ export default function DashboardScreen({
     isGuest, 
     printers, 
     printersLoading, 
+    activeQuest,
+    activeQuestLoading,
     handleLogout, 
     handleImportFromExcel,
     showNotification,
@@ -33,6 +41,343 @@ export default function DashboardScreen({
     const [showGeminiModal, setShowGeminiModal] = useState(false);
     const [isProcessingGemini, setIsProcessingGemini] = useState(false);
     const [sortConfig, setSortConfig] = useState({ key: 'departamento', direction: 'asc' });
+
+    // Estados da Quest de Contadores
+    const [showQuestModal, setShowQuestModal] = useState(false);
+    const [selectedPrinterForQuestCollect, setSelectedPrinterForQuestCollect] = useState(null);
+    const [questCollectFile, setQuestCollectFile] = useState(null);
+    const [questCollectPreview, setQuestCollectPreview] = useState('');
+    const [questCollectPB, setQuestCollectPB] = useState('');
+    const [questCollectColor, setQuestCollectColor] = useState('');
+    const [questCollectTipo, setQuestCollectTipo] = useState('PB');
+    const [isUploadingQuestCollect, setIsUploadingQuestCollect] = useState(false);
+    const [isProcessingQuestOCR, setIsProcessingQuestOCR] = useState(false);
+    const [questActiveTab, setQuestActiveTab] = useState('pending'); // 'pending' | 'collected'
+
+    const usbPrinters = useMemo(() => {
+        return printers.filter(p => (p.ip || '').toLowerCase() === 'usb');
+    }, [printers]);
+
+    const questStatusList = useMemo(() => {
+        if (!activeQuest) return [];
+        const questStart = new Date(activeQuest.startDate);
+        return usbPrinters.map(p => {
+            const hasBeenUpdatedThisQuest = p.dataContador && new Date(p.dataContador) >= questStart;
+            const isCollected = hasBeenUpdatedThisQuest && p.contadorPB !== undefined && p.contadorPB !== null && p.contadorImageUrl;
+            return {
+                ...p,
+                isCollected
+            };
+        });
+    }, [usbPrinters, activeQuest]);
+
+    const { pendingPrinters, collectedPrinters } = useMemo(() => {
+        const pending = [];
+        const collected = [];
+        questStatusList.forEach(item => {
+            if (item.isCollected) {
+                collected.push(item);
+            } else {
+                pending.push(item);
+            }
+        });
+        return { pendingPrinters: pending, collectedPrinters: collected };
+    }, [questStatusList]);
+
+    const calculateTimeRemaining = () => {
+        if (!activeQuest) return '';
+        const diff = new Date(activeQuest.endDate) - new Date();
+        if (diff <= 0) return 'Expirado!';
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+        const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        return `${days}d e ${hours}h restantes`;
+    };
+
+    const isQuestExpired = useMemo(() => {
+        if (!activeQuest) return false;
+        return new Date() > new Date(activeQuest.endDate);
+    }, [activeQuest]);
+
+    const handleStartQuest = async () => {
+        if (!isAdmin) return;
+        const confirmStart = window.confirm("Deseja iniciar uma nova Missão de Coleta de Contadores? O prazo limite será de 1 semana (7 dias).");
+        if (!confirmStart) return;
+
+        try {
+            const now = new Date();
+            const endDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days
+            const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+            const currentMonthYear = `${monthNames[now.getMonth()]}/${now.getFullYear()}`;
+
+            const questData = {
+                status: 'active',
+                startDate: now.toISOString(),
+                endDate: endDate.toISOString(),
+                month: currentMonthYear,
+                createdAt: now.toISOString()
+            };
+
+            await addDoc(collection(db, questsCollectionPath), questData);
+            showNotification(`Missão iniciada com sucesso! Você tem até ${endDate.toLocaleDateString()} para concluir.`, 'success');
+            setShowQuestModal(true);
+        } catch (error) {
+            console.error("Erro ao iniciar quest:", error);
+            showNotification("Erro ao iniciar nova missão.", "error");
+        }
+    };
+
+    const handleFinishQuest = async () => {
+        if (!isAdmin) return;
+        const confirmFinish = window.confirm("Deseja encerrar esta Missão de Coleta de Contadores? Isso arquivará a missão atual para que você possa iniciar a próxima no mês seguinte. Certifique-se de já ter baixado o PDF e a planilha Simpress!");
+        if (!confirmFinish) return;
+
+        try {
+            const questRef = doc(db, questsCollectionPath, activeQuest.id);
+            await updateDoc(questRef, {
+                status: 'completed',
+                completedAt: new Date().toISOString()
+            });
+            setShowQuestModal(false);
+            showNotification("Missão encerrada e arquivada com sucesso!", "success");
+        } catch (error) {
+            console.error("Erro ao finalizar quest:", error);
+            showNotification("Erro ao finalizar a missão.", "error");
+        }
+    };
+
+    const handleSelectPrinterForQuest = (printer) => {
+        setSelectedPrinterForQuestCollect(printer);
+        setQuestCollectPB(printer.contadorPB !== undefined && printer.contadorPB !== null ? printer.contadorPB : (printer.contador || ''));
+        setQuestCollectColor(printer.contadorColor || '');
+        setQuestCollectTipo(printer.tipo || (String(printer.model || '').toLowerCase().includes('color') ? 'Color' : 'PB'));
+        setQuestCollectFile(null);
+        setQuestCollectPreview('');
+    };
+
+    const handleQuestOCR = async () => {
+        if (!questCollectFile) {
+            alert("Selecione uma imagem do contador antes.");
+            return;
+        }
+        setIsProcessingQuestOCR(true);
+        const apiKey = localStorage.getItem('mapa_jurua_gemini_key') || process.env.REACT_APP_GEMINI_API_KEY || '';
+        if (!apiKey) {
+            alert("A chave API do Gemini não foi configurada.");
+            setIsProcessingQuestOCR(false);
+            return;
+        }
+        
+        try {
+            const result = await processCommandWithGemini(apiKey, "Extrair os contadores de páginas P&B e Colorido desta folha de teste", questCollectFile, printers);
+            
+            if (result.error) {
+                alert(result.error);
+                return;
+            }
+
+            if (result.contadorPB !== undefined && result.contadorPB !== null) {
+                setQuestCollectPB(result.contadorPB);
+                showNotification("Contador P&B detectado por IA!", "success");
+            }
+            if (result.contadorColor !== undefined && result.contadorColor !== null) {
+                setQuestCollectColor(result.contadorColor);
+                setQuestCollectTipo('Color');
+                showNotification("Contador Colorido detectado por IA!", "success");
+            }
+        } catch (error) {
+            console.error(error);
+            alert("Erro ao rodar IA: " + error.message);
+        } finally {
+            setIsProcessingQuestOCR(false);
+        }
+    };
+
+    const handleSaveQuestCollect = async () => {
+        if (!selectedPrinterForQuestCollect) return;
+        if (!questCollectPB) {
+            alert("O Contador P&B é obrigatório.");
+            return;
+        }
+        if (!questCollectFile && !selectedPrinterForQuestCollect.contadorImageUrl) {
+            alert("Você precisa anexar uma foto do comprovante de contador.");
+            return;
+        }
+
+        setIsUploadingQuestCollect(true);
+        let imageUrl = selectedPrinterForQuestCollect.contadorImageUrl || '';
+
+        try {
+            if (questCollectFile) {
+                const imageName = `${Date.now()}-quest-${questCollectFile.name.replace(/\s+/g, '_')}`;
+                const imageRef = ref(storage, `printers_counters/${imageName}`);
+                await uploadBytes(imageRef, questCollectFile);
+                imageUrl = await getDownloadURL(imageRef);
+            }
+
+            const today = new Date();
+            const yyyy = today.getFullYear();
+            const mm = String(today.getMonth() + 1).padStart(2, '0');
+            const dd = String(today.getDate()).padStart(2, '0');
+            const dateStr = `${yyyy}-${mm}-${dd}`;
+
+            const printerRef = doc(db, printersCollectionPath, selectedPrinterForQuestCollect.id);
+            await updateDoc(printerRef, {
+                contadorPB: Number(questCollectPB),
+                contadorColor: questCollectTipo === 'Color' && questCollectColor ? Number(questCollectColor) : null,
+                tipo: questCollectTipo,
+                contadorImageUrl: imageUrl,
+                dataContador: dateStr,
+                contador: Number(questCollectPB), // retrocompatibilidade
+                observacao: `Coletado via Quest. ` + (selectedPrinterForQuestCollect.observacao || '')
+            });
+
+            showNotification("Leitura do contador salva com sucesso!", "success");
+            setSelectedPrinterForQuestCollect(null);
+            setQuestCollectFile(null);
+            setQuestCollectPreview('');
+        } catch (error) {
+            console.error("Erro ao salvar coleta de quest:", error);
+            alert("Erro ao salvar: " + error.message);
+        } finally {
+            setIsUploadingQuestCollect(false);
+        }
+    };
+
+    const handleExportSimpressExcel = () => {
+        if (!activeQuest) return;
+        const questStart = new Date(activeQuest.startDate);
+        const questCompletedUSBs = usbPrinters.filter(p => p.dataContador && new Date(p.dataContador) >= questStart);
+        
+        if (questCompletedUSBs.length === 0) {
+            showNotification('Nenhum contador coletado para exportar.', 'error');
+            return;
+        }
+        
+        const data = questCompletedUSBs.map(p => ({
+            'Série': p.serial,
+            'Contador PB': p.contadorPB !== undefined && p.contadorPB !== null ? p.contadorPB : (p.contador || 0),
+            'Contador Color': p.tipo === 'Color' ? (p.contadorColor || 0) : 0
+        }));
+        
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Contadores_Simpress");
+        XLSX.writeFile(wb, `Coleta_Contadores_Simpress_${activeQuest.month.replace('/', '_')}.xlsx`);
+        showNotification('Planilha Simpress exportada com sucesso!', 'success');
+    };
+
+    const handleGeneratePDFComprovantes = async () => {
+        if (!activeQuest) return;
+        const questStart = new Date(activeQuest.startDate);
+        const questCompletedUSBs = usbPrinters.filter(p => p.dataContador && new Date(p.dataContador) >= questStart && p.contadorImageUrl);
+        
+        if (questCompletedUSBs.length === 0) {
+            showNotification('Nenhum comprovante com imagem coletado nesta quest.', 'error');
+            return;
+        }
+
+        showNotification('Gerando PDF. Por favor, aguarde...', 'info', 10000);
+        
+        try {
+            const pdf = new jsPDF('p', 'mm', 'a4');
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            
+            const loadImageAsBase64 = (url) => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous';
+                    img.src = url;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0);
+                        try {
+                            const dataURL = canvas.toDataURL('image/jpeg', 0.85);
+                            resolve(dataURL);
+                        } catch (err) {
+                            reject(err);
+                        }
+                    };
+                    img.onerror = () => reject(new Error('Falha ao carregar imagem: ' + url));
+                });
+            };
+
+            for (let i = 0; i < questCompletedUSBs.length; i++) {
+                const printer = questCompletedUSBs[i];
+                if (i > 0) pdf.addPage();
+                
+                pdf.setFillColor(0, 45, 111);
+                pdf.rect(0, 0, pageWidth, 40, 'F');
+                
+                pdf.setFont('helvetica', 'bold');
+                pdf.setFontSize(22);
+                pdf.setTextColor(255, 255, 255);
+                pdf.text("Mapa Juruá - Comprovante", 15, 20);
+                
+                pdf.setFontSize(10);
+                pdf.setTextColor(208, 0, 187);
+                pdf.text("SIMPRESS OUTSOURCING PARTNER SUITE", 15, 30);
+                
+                pdf.setFont('helvetica', 'bold');
+                pdf.setFontSize(11);
+                pdf.setTextColor(30, 41, 59);
+                pdf.text("DETALHES DO ATIVO", 15, 55);
+                pdf.line(15, 57, pageWidth - 15, 57);
+                
+                pdf.setFont('helvetica', 'normal');
+                pdf.setFontSize(10);
+                pdf.text(`Número de Série: ${printer.serial}`, 15, 65);
+                pdf.text(`Modelo: ${printer.model}`, 15, 71);
+                pdf.text(`Localização: ${printer.location}`, 15, 77);
+                pdf.text(`Departamento: ${printer.departamento || 'N/D'}`, 15, 83);
+                
+                pdf.setFont('helvetica', 'bold');
+                pdf.text(`Contador P&B: ${printer.contadorPB !== undefined ? printer.contadorPB : (printer.contador || 0)}`, 110, 65);
+                pdf.text(`Contador Color: ${printer.tipo === 'Color' ? (printer.contadorColor || 0) : 'N/D (Monocromática)'}`, 110, 71);
+                pdf.setFont('helvetica', 'normal');
+                pdf.text(`Tipo de Ativo: ${printer.tipo === 'Color' ? 'Colorida' : 'Monocromática P&B'}`, 110, 77);
+                pdf.text(`Data da Leitura: ${printer.dataContador || ''}`, 110, 83);
+                
+                pdf.setFont('helvetica', 'bold');
+                pdf.text("FOTO DO COMPROVANTE (LEITURA DO CONTADOR)", 15, 98);
+                pdf.line(15, 100, pageWidth - 15, 100);
+                
+                try {
+                    const imgData = await loadImageAsBase64(printer.contadorImageUrl);
+                    const targetWidth = pageWidth - 30;
+                    const targetHeight = pageHeight - 120;
+                    pdf.addImage(imgData, 'JPEG', 15, 105, targetWidth, targetHeight, undefined, 'FAST');
+                } catch (err) {
+                    console.error("Erro CORS:", err);
+                    pdf.setDrawColor(220, 38, 38);
+                    pdf.setFillColor(254, 242, 242);
+                    pdf.rect(15, 105, pageWidth - 30, 40, 'FD');
+                    
+                    pdf.setFont('helvetica', 'bold');
+                    pdf.setTextColor(220, 38, 38);
+                    pdf.text("IMAGEM NÃO DISPONÍVEL NO COMPILADO", 20, 115);
+                    pdf.setFont('helvetica', 'normal');
+                    pdf.setTextColor(127, 29, 29);
+                    pdf.text("A imagem não pôde ser baixada automaticamente no PDF devido a restrições de CORS.", 20, 122);
+                    pdf.text("A foto original continua salva com segurança no banco de dados e pode ser baixada individualmente.", 20, 128);
+                }
+                
+                pdf.setFont('helvetica', 'normal');
+                pdf.setFontSize(8);
+                pdf.setTextColor(148, 163, 184);
+                pdf.text(`Gerado em ${new Date().toLocaleString()} - Página ${i + 1} de ${questCompletedUSBs.length}`, 15, pageHeight - 10);
+            }
+            
+            pdf.save(`Comprovantes_Contadores_Simpress_${activeQuest.month.replace('/', '_')}.pdf`);
+            showNotification('PDF de comprovantes gerado e baixado com sucesso!', 'success');
+        } catch (error) {
+            console.error("Erro no PDF:", error);
+            showNotification('Erro ao compilar comprovantes em PDF.', 'error');
+        }
+    };
 
     // Envia o comando e foto do usuário para o Gemini
     const handleProcessGeminiCommand = async (apiKey, commandText, imageFile) => {
@@ -66,7 +411,8 @@ export default function DashboardScreen({
                 status: result.status || existingPrinter?.status || 'Funcionando',
                 observacao: result.observacao || existingPrinter?.observacao || '',
                 swap: result.swap || null,
-                contador: result.contador !== undefined && result.contador !== null ? result.contador : (existingPrinter?.contador || '')
+                contadorPB: result.contadorPB !== undefined && result.contadorPB !== null ? result.contadorPB : (existingPrinter?.contadorPB || existingPrinter?.contador || ''),
+                contadorColor: result.contadorColor !== undefined && result.contadorColor !== null ? result.contadorColor : (existingPrinter?.contadorColor || '')
             };
 
             setShowGeminiModal(false);
@@ -117,7 +463,9 @@ export default function DashboardScreen({
             Local: p.location, 
             IP: p.ip, 
             Status: p.status,
-            Contador: p.contador || '',
+            Contador_PB: p.contadorPB !== undefined && p.contadorPB !== null ? p.contadorPB : (p.contador || ''),
+            Contador_Color: p.contadorColor || '',
+            Tipo: p.tipo || 'PB',
             Data_Contador: p.dataContador || ''
         }));
         const ws = XLSX.utils.json_to_sheet(data);
@@ -218,6 +566,43 @@ export default function DashboardScreen({
 
                 {/* Main Content */}
                 <main className="container mx-auto p-4 md:p-6 animate-fade-in">
+                    
+                    {/* Alerta de Missão/Quest de Contadores Ativa */}
+                    {activeQuest && (
+                        <div 
+                            onClick={() => setShowQuestModal(true)}
+                            className="mb-6 bg-gradient-to-r from-simpress-blue to-simpress-dark text-white p-5 rounded-[24px] shadow-xl border-l-[6px] border-amber-500 flex flex-col md:flex-row justify-between items-center gap-4 cursor-pointer transform hover:scale-[1.01] active:scale-[0.99] transition-all duration-300 animate-fade-in"
+                        >
+                            <div className="flex items-center gap-4 w-full md:w-auto">
+                                <div className="bg-amber-500/10 p-3 rounded-2xl border border-amber-500/20 text-amber-500 flex items-center justify-center">
+                                    <Trophy size={24} className="text-amber-400 animate-bounce" />
+                                </div>
+                                <div>
+                                    <h3 className="text-base font-black tracking-tight flex items-center gap-2">
+                                        Missão Ativa: Coleta de Contadores ({activeQuest.month})
+                                    </h3>
+                                    <p className="text-xs text-simpress-gray font-semibold">
+                                        Colete e fotografe os contadores das impressoras USB. Progresso: <strong className="text-white">{collectedPrinters.length} de {usbPrinters.length} concluídas</strong>.
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end">
+                                <div className="text-left md:text-right">
+                                    <span className="text-[10px] text-simpress-gray font-bold uppercase tracking-wider block">Tempo Restante</span>
+                                    <span className={`text-xs font-bold px-2.5 py-1 rounded-lg border ${
+                                        isQuestExpired 
+                                            ? 'bg-rose-500/20 border-rose-500/30 text-rose-300'
+                                            : 'bg-amber-500/20 border-amber-500/30 text-amber-300 animate-pulse'
+                                    }`}>
+                                        {isQuestExpired ? '⚠️ Expirou!' : calculateTimeRemaining()}
+                                    </span>
+                                </div>
+                                <span className="bg-white/10 hover:bg-white/20 p-2 rounded-xl border border-white/10 transition-colors text-white font-extrabold text-xs flex items-center gap-1">
+                                    Abrir Missão <ChevronRight size={14} />
+                                </span>
+                            </div>
+                        </div>
+                    )}
                     
                     {/* Barra de Status Rápida - Ocultada por Padrão no Mobile */}
                     <div className={`${showFiltersMobile ? 'flex animate-fade-in' : 'hidden lg:flex'} flex-wrap gap-2 mb-5 select-none p-1.5 rounded-2xl bg-white border border-slate-200/60 shadow-sm max-w-max`}>
@@ -328,8 +713,22 @@ export default function DashboardScreen({
 
                             {/* Botões de Ação (Sempre Visíveis em Todas as Telas!) */}
                             <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto transition-all duration-300">
-                                {isAdmin && (
-                                    <>
+                                        <button 
+                                            onClick={activeQuest ? () => setShowQuestModal(true) : handleStartQuest}
+                                            className={`w-full sm:w-auto font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all duration-300 shadow-md transform hover:scale-[1.01] text-xs ${
+                                                activeQuest 
+                                                    ? 'bg-gradient-to-r from-amber-500 to-orange-600 text-white shadow-orange-600/10 hover:shadow-orange-500/25 animate-pulse-soft border border-orange-500/20'
+                                                    : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 shadow-sm'
+                                            }`}
+                                            title={activeQuest ? "Visualizar Progresso da Missão" : "Iniciar Missão Mensal de Coleta USB"}
+                                        >
+                                            <Trophy size={14} className={activeQuest ? "text-yellow-300" : "text-amber-500"} />
+                                            <span>
+                                                {activeQuest 
+                                                    ? `Quest: ${collectedPrinters.length}/${usbPrinters.length}` 
+                                                    : 'Iniciar Coleta USB'}
+                                            </span>
+                                        </button>
                                         <button 
                                             onClick={() => navigate('/impressora/nova')} 
                                             className="w-full sm:w-auto bg-simpress-magenta hover:bg-simpress-magenta/90 text-white font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all duration-300 shadow-md shadow-simpress-magenta/10 hover:shadow-simpress-magenta/25 transform hover:scale-[1.01] text-xs"
@@ -349,8 +748,6 @@ export default function DashboardScreen({
                                         >
                                             <FileUp size={15}/> Importar Planilha
                                         </button>
-                                    </>
-                                )}
                                 <button 
                                     onClick={handleExport} 
                                     className="w-full sm:w-auto bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition-all duration-300 shadow-sm transform hover:scale-[1.01] text-xs"
@@ -503,6 +900,377 @@ export default function DashboardScreen({
                         setShowImportModal(false);
                     }} 
                 />
+            )}
+
+            {/* Modal de Quest de Contadores */}
+            {showQuestModal && activeQuest && (
+                <div className="fixed inset-0 bg-simpress-dark/85 backdrop-blur-sm flex flex-col items-center justify-start p-4 z-[9998] overflow-y-auto pt-6">
+                    <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-lg border border-slate-100 overflow-hidden animate-scale-in my-4">
+                        
+                        {/* Header da Quest */}
+                        <div className="bg-gradient-to-r from-amber-500 to-orange-600 p-6 text-white relative">
+                            <button 
+                                onClick={() => { setShowQuestModal(false); setSelectedPrinterForQuestCollect(null); }}
+                                className="absolute top-4 right-4 text-white/80 hover:text-white transition-colors"
+                            >
+                                <X size={24} />
+                            </button>
+                            <div className="flex items-center gap-2 mb-1">
+                                <Trophy className="text-yellow-300 animate-bounce" size={26} />
+                                <h3 className="text-xl font-black tracking-tight">Missão: Coleta de Contadores ({activeQuest.month})</h3>
+                            </div>
+                            <p className="text-[10px] text-orange-100 font-extrabold uppercase tracking-widest">Coleta Mensal USB &middot; Limite de 1 semana</p>
+                        </div>
+
+                        {/* Conteúdo do Modal */}
+                        {selectedPrinterForQuestCollect ? (
+                            /* TELA 1: Formulário de Coleta Rápida */
+                            <div className="p-6 space-y-5">
+                                <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                                    <button 
+                                        onClick={() => { setSelectedPrinterForQuestCollect(null); setQuestCollectFile(null); setQuestCollectPreview(''); }}
+                                        className="text-xs text-slate-500 hover:text-simpress-blue font-bold flex items-center gap-1"
+                                    >
+                                        <span>⬅️</span> Voltar para a Lista
+                                    </button>
+                                    <span className="text-[10px] font-extrabold uppercase bg-amber-50 text-amber-700 px-2 py-0.5 rounded border border-amber-200">
+                                        Coleta Rápida
+                                    </span>
+                                </div>
+
+                                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200/60">
+                                    <h4 className="font-black text-slate-800 text-sm">{selectedPrinterForQuestCollect.model}</h4>
+                                    <p className="text-xs text-slate-500 mt-1 font-semibold">
+                                        Série: <strong className="text-slate-700 font-bold">{selectedPrinterForQuestCollect.serial}</strong> &middot; Local: <strong className="text-slate-700 font-bold">{selectedPrinterForQuestCollect.location} ({selectedPrinterForQuestCollect.departamento || 'N/D'})</strong>
+                                    </p>
+                                </div>
+
+                                {/* Upload de Comprovante */}
+                                <div className="space-y-2">
+                                    <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider pl-1">
+                                        Foto do Comprovante (Folha de Contadores)
+                                    </label>
+                                    
+                                    {questCollectPreview || selectedPrinterForQuestCollect.contadorImageUrl ? (
+                                        <div className="relative border border-slate-200/60 p-3 rounded-2xl flex flex-col items-center bg-slate-50">
+                                            {questCollectPreview && (
+                                                <button 
+                                                    onClick={() => { setQuestCollectFile(null); setQuestCollectPreview(''); }}
+                                                    className="absolute top-2 right-2 bg-slate-800 text-white p-1 rounded-full hover:bg-red-600 transition-colors"
+                                                >
+                                                    <X size={14} />
+                                                </button>
+                                            )}
+                                            <img 
+                                                src={questCollectPreview || selectedPrinterForQuestCollect.contadorImageUrl} 
+                                                alt="Comprovante" 
+                                                className="h-36 w-auto object-contain rounded-xl border border-slate-200" 
+                                            />
+                                        </div>
+                                    ) : null}
+
+                                    {!questCollectPreview && (
+                                        <label className="border-2 border-dashed border-slate-200 hover:border-amber-500 rounded-2xl p-6 flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-300 bg-slate-50/50 hover:bg-slate-50">
+                                            <Camera size={26} className="text-slate-400" />
+                                            <span className="text-xs text-slate-600 font-bold">Tirar Foto ou Anexar Imagem</span>
+                                            <span className="text-[10px] text-slate-400 font-semibold">Câmera abre automaticamente no celular</span>
+                                            <input 
+                                                type="file" 
+                                                accept="image/*" 
+                                                capture="environment"
+                                                onChange={(e) => {
+                                                    const file = e.target.files[0];
+                                                    if (file) {
+                                                        setQuestCollectFile(file);
+                                                        setQuestCollectPreview(URL.createObjectURL(file));
+                                                    }
+                                                }} 
+                                                className="hidden" 
+                                            />
+                                        </label>
+                                    )}
+
+                                    {questCollectFile && (
+                                        <button
+                                            onClick={handleQuestOCR}
+                                            disabled={isProcessingQuestOCR}
+                                            className="w-full bg-violet-600 hover:bg-violet-750 text-white py-2.5 px-4 rounded-xl text-xs font-extrabold flex items-center justify-center gap-2 shadow-sm transition-colors"
+                                        >
+                                            {isProcessingQuestOCR ? (
+                                                <>
+                                                    <RefreshCw className="animate-spin" size={13} />
+                                                    <span>IA Processando Comprovante...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Sparkles size={13} />
+                                                    <span>✨ Autopreencher com IA (OCR)</span>
+                                                </>
+                                            )}
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Campos de Contador */}
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider pl-1">Tipo</label>
+                                        <select 
+                                            value={questCollectTipo} 
+                                            onChange={e => {
+                                                setQuestCollectTipo(e.target.value);
+                                                if (e.target.value === 'PB') setQuestCollectColor('');
+                                            }}
+                                            className="w-full p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-bold bg-white text-slate-700"
+                                        >
+                                            <option value="PB">P&B (Mono)</option>
+                                            <option value="Color">Colorida</option>
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider pl-1">Contador P&B</label>
+                                        <input 
+                                            type="number"
+                                            value={questCollectPB}
+                                            onChange={e => setQuestCollectPB(e.target.value)}
+                                            className="w-full p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-bold bg-white text-slate-700"
+                                            placeholder="Valor PB"
+                                            required
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider pl-1">Contador Color</label>
+                                        <input 
+                                            type="number"
+                                            value={questCollectTipo === 'PB' ? '' : questCollectColor}
+                                            onChange={e => setQuestCollectColor(e.target.value)}
+                                            disabled={questCollectTipo === 'PB'}
+                                            className="w-full p-2 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 text-xs font-bold bg-white text-slate-700 disabled:bg-slate-100 disabled:text-slate-400"
+                                            placeholder={questCollectTipo === 'PB' ? "Desativado" : "Valor Color"}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Botões de Ação */}
+                                <div className="flex gap-3 pt-4 border-t border-slate-100">
+                                    <button 
+                                        onClick={() => { setSelectedPrinterForQuestCollect(null); setQuestCollectFile(null); setQuestCollectPreview(''); }}
+                                        disabled={isUploadingQuestCollect}
+                                        className="w-1/2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl text-xs font-extrabold transition-colors"
+                                    >
+                                        Cancelar
+                                    </button>
+                                    <button 
+                                        onClick={handleSaveQuestCollect}
+                                        disabled={isUploadingQuestCollect}
+                                        className="w-1/2 bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/10 transition-all transform active:scale-95"
+                                    >
+                                        {isUploadingQuestCollect ? (
+                                            <>
+                                                <RefreshCw className="animate-spin" size={14} />
+                                                <span>Salvando...</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Check size={14} />
+                                                <span>Confirmar Coleta</span>
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            /* TELA 2: Painel de Progresso e Checklist */
+                            <div className="p-6 space-y-6">
+                                {/* Alertas e Cronômetro */}
+                                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-orange-50/50 p-4 rounded-2xl border border-orange-100">
+                                    <div className="flex items-center gap-2 text-orange-800">
+                                        <Clock size={16} className="text-orange-600 flex-shrink-0" />
+                                        <span className="text-xs font-bold">Prazo Limite da Coleta:</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className={`text-xs font-extrabold px-3 py-1 rounded-lg border ${
+                                            isQuestExpired 
+                                                ? 'bg-rose-50 border-rose-200 text-rose-700 animate-pulse'
+                                                : 'bg-orange-100 border-orange-200 text-orange-800'
+                                        }`}>
+                                            {isQuestExpired ? '⚠️ Quest Expirada!' : calculateTimeRemaining()}
+                                        </span>
+                                        <span className="text-[10px] text-slate-400 font-bold">
+                                            Fim: {new Date(activeQuest.endDate).toLocaleDateString()}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Alerta se Expirado */}
+                                {isQuestExpired && (
+                                    <div className="p-4 bg-rose-50 text-rose-800 rounded-2xl border border-rose-200/50 flex items-start gap-2.5 text-xs font-semibold animate-pulse-soft">
+                                        <AlertCircle className="text-rose-600 mt-0.5 flex-shrink-0" size={16} />
+                                        <span>
+                                            <strong>Limite de 1 semana atingido!</strong> A missão expirou. Você ainda pode gerar os relatórios compilados com o que foi coletado até agora, mas deve concluir a missão para liberar o painel.
+                                        </span>
+                                    </div>
+                                )}
+
+                                {/* Barra de Progresso Visual */}
+                                <div className="space-y-2">
+                                    <div className="flex justify-between items-center text-xs">
+                                        <span className="text-slate-500 font-bold">Progresso da Coleta USB</span>
+                                        <span className="text-slate-800 font-extrabold">
+                                            {collectedPrinters.length} de {usbPrinters.length} concluídas ({usbPrinters.length > 0 ? Math.round((collectedPrinters.length / usbPrinters.length) * 100) : 0}%)
+                                        </span>
+                                    </div>
+                                    <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden border border-slate-200/30">
+                                        <div 
+                                            className="bg-gradient-to-r from-amber-500 to-orange-600 h-full rounded-full transition-all duration-500" 
+                                            style={{ width: `${usbPrinters.length > 0 ? (collectedPrinters.length / usbPrinters.length) * 100 : 0}%` }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Tabs de Filtro */}
+                                <div className="flex border-b border-slate-100 pb-0.5">
+                                    <button 
+                                        onClick={() => setQuestActiveTab('pending')}
+                                        className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 ${
+                                            questActiveTab === 'pending'
+                                                ? 'border-orange-600 text-orange-600 font-black'
+                                                : 'border-transparent text-slate-400 hover:text-slate-600'
+                                        }`}
+                                    >
+                                        <span>🔴 Faltam</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${questActiveTab === 'pending' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-500'}`}>
+                                            {pendingPrinters.length}
+                                        </span>
+                                    </button>
+                                    <button 
+                                        onClick={() => setQuestActiveTab('collected')}
+                                        className={`pb-3 px-4 text-xs font-bold border-b-2 transition-all flex items-center gap-1.5 ${
+                                            questActiveTab === 'collected'
+                                                ? 'border-orange-600 text-orange-600 font-black'
+                                                : 'border-transparent text-slate-400 hover:text-slate-600'
+                                        }`}
+                                    >
+                                        <span>🟢 Coletados</span>
+                                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-extrabold ${questActiveTab === 'collected' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-500'}`}>
+                                            {collectedPrinters.length}
+                                        </span>
+                                    </button>
+                                </div>
+
+                                {/* Listas de Impressoras */}
+                                <div className="max-h-[220px] overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                                    {questActiveTab === 'pending' ? (
+                                        pendingPrinters.length === 0 ? (
+                                            <div className="p-8 text-center text-slate-400 font-bold text-xs flex flex-col items-center justify-center gap-1 bg-slate-50 rounded-2xl border border-dashed">
+                                                <span>🎉</span> Excelente! Todos os contadores USB já foram coletados!
+                                            </div>
+                                        ) : (
+                                            pendingPrinters.map(p => (
+                                                <div 
+                                                    key={p.id} 
+                                                    className="p-3 bg-slate-50 border border-slate-200/50 rounded-2xl flex items-center justify-between gap-3 hover:bg-slate-100/50 transition-colors"
+                                                >
+                                                    <div className="min-w-0 flex-grow">
+                                                        <h5 className="text-xs font-black text-slate-800 truncate">{p.model}</h5>
+                                                        <p className="text-[10px] text-slate-500 font-semibold mt-0.5 truncate">
+                                                            Série: <strong className="text-slate-700">{p.serial}</strong> &middot; Local: <strong className="text-slate-700">{p.location}</strong>
+                                                        </p>
+                                                    </div>
+                                                    <button 
+                                                        onClick={() => handleSelectPrinterForQuest(p)}
+                                                        disabled={isQuestExpired}
+                                                        className={`bg-orange-500 hover:bg-orange-600 text-white font-extrabold py-1.5 px-3 rounded-lg text-[10px] flex items-center gap-1 transition-all transform active:scale-95 ${isQuestExpired ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                    >
+                                                        📸 Coletar
+                                                    </button>
+                                                </div>
+                                            ))
+                                        )
+                                    ) : (
+                                        collectedPrinters.length === 0 ? (
+                                            <div className="p-8 text-center text-slate-400 font-bold text-xs bg-slate-50 rounded-2xl border border-dashed">
+                                                Nenhum contador coletado nesta quest ainda.
+                                            </div>
+                                        ) : (
+                                            collectedPrinters.map(p => (
+                                                <div 
+                                                    key={p.id} 
+                                                    className="p-3 bg-emerald-50/20 border border-emerald-100 rounded-2xl flex items-center justify-between gap-3"
+                                                >
+                                                    <div className="flex items-center gap-3 min-w-0 flex-grow">
+                                                        {p.contadorImageUrl && (
+                                                            <a href={p.contadorImageUrl} target="_blank" rel="noreferrer" className="flex-shrink-0">
+                                                                <img 
+                                                                    src={p.contadorImageUrl} 
+                                                                    alt="Comprovante" 
+                                                                    className="w-9 h-9 object-cover rounded-lg border border-emerald-200" 
+                                                                />
+                                                            </a>
+                                                        )}
+                                                        <div className="min-w-0 flex-grow">
+                                                            <h5 className="text-xs font-black text-slate-800 truncate">{p.model}</h5>
+                                                            <p className="text-[10px] text-slate-500 font-semibold truncate">
+                                                                Série: <strong className="text-slate-700">{p.serial}</strong> &middot; Local: <strong className="text-slate-700">{p.location}</strong>
+                                                            </p>
+                                                            <div className="flex items-center gap-2 mt-1">
+                                                                <span className="text-[9px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.5 rounded">
+                                                                    P&B: {p.contadorPB !== undefined && p.contadorPB !== null ? p.contadorPB : (p.contador || 0)}
+                                                                </span>
+                                                                {p.tipo === 'Color' && p.contadorColor !== undefined && p.contadorColor !== null && (
+                                                                    <span className="text-[9px] bg-sky-100 text-sky-800 font-extrabold px-1.5 py-0.5 rounded">
+                                                                        Color: {p.contadorColor}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <button 
+                                                        onClick={() => handleSelectPrinterForQuest(p)}
+                                                        disabled={isQuestExpired}
+                                                        className={`bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-1.5 px-3 rounded-lg text-[10px] border border-slate-200 transition-all transform active:scale-95 ${isQuestExpired ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                    >
+                                                        ✏️ Ajustar
+                                                    </button>
+                                                </div>
+                                            ))
+                                        )
+                                    )}
+                                </div>
+
+                                {/* Exportações e Encerramento */}
+                                <div className="border-t border-slate-100 pt-5 space-y-4">
+                                    <div className="flex flex-col sm:flex-row gap-2">
+                                        <button 
+                                            onClick={handleExportSimpressExcel}
+                                            className="w-full sm:w-1/2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-1.5 transition-colors text-xs"
+                                        >
+                                            <FileText size={14} className="text-emerald-600" />
+                                            <span>Gerar Planilha Simpress</span>
+                                        </button>
+                                        <button 
+                                            onClick={handleGeneratePDFComprovantes}
+                                            className="w-full sm:w-1/2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-extrabold py-2.5 px-4 rounded-xl flex items-center justify-center gap-1.5 transition-colors text-xs"
+                                        >
+                                            <FileText size={14} className="text-rose-500" />
+                                            <span>Compilar Fotos (PDF)</span>
+                                        </button>
+                                    </div>
+
+                                    {isAdmin && (
+                                        <button 
+                                            onClick={handleFinishQuest}
+                                            className="w-full bg-simpress-magenta hover:bg-simpress-magenta/90 text-white font-extrabold py-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md shadow-simpress-magenta/15 transition-all transform active:scale-95 animate-pulse-soft"
+                                        >
+                                            <Trophy size={14} />
+                                            <span>Concluir e Encerrar Missão Mensal</span>
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
             )}
 
             {/* Footer */}

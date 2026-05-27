@@ -69,7 +69,10 @@ INSTRUÇÕES DE PROCESSAMENTO:
    - Identifique qual impressora deve sair (a que atualmente ocupa o local/departamento alvo, ex: "TI" ou "ADM") e qual deve entrar (a de backup com a série detectada ou citada).
    - O IP, Local e Departamento do ativo de saída devem ser repassados para este novo ativo de entrada.
    - Preencha o objeto 'swap' no JSON contendo as instruções para atualizar o ativo que está saindo (outgoing). Se não for um comando de substituição/troca, defina 'swap' como null.
-5. Se houver uma foto de folha de contadores ou relatório e você detectar qualquer contador numérico de páginas impressas (termos como "Total de Páginas", "Impressões", "Total Pages", "Page Count", "Contador de Páginas", etc.), extraia esse valor numérico para o campo 'contador' e inicie o campo 'observacao' com "Contador detectado por IA: X páginas. " seguido das demais observações.
+5. Se houver uma foto de folha de contadores ou relatório:
+   - Se for uma impressora P&B (monocromática), extraia o contador total para o campo 'contadorPB' e deixe 'contadorColor' como nulo ou 0.
+   - Se for uma impressora Colorida, extraia o contador de páginas em preto e branco (frequentemente listado como "Mono", "B&W", "P&B", "Black") para 'contadorPB' e o contador de páginas coloridas (frequentemente listado como "Color", "Colorido") para 'contadorColor'. Se houver apenas um valor total no relatório colorido, use-o como 'contadorPB' e tente estimar ou deixar 'contadorColor' nulo ou 0.
+   - Adicione na 'observacao' uma frase como: "Contadores detectados por IA - P&B: X, Color: Y. ".
 6. Se você não conseguir determinar o número de série de forma alguma, retorne um JSON com a propriedade "error" preenchida explicando o motivo.
 
 Você deve responder EXCLUSIVAMENTE em formato JSON puro, sem marcações markdown ou blocos de código adicionais, seguindo rigorosamente a estrutura abaixo:
@@ -82,7 +85,8 @@ Você deve responder EXCLUSIVAMENTE em formato JSON puro, sem marcações markdo
   "ip": "ENDEREÇO IP SUGERIDO (ex: 192.168.1.15 ou USB)",
   "status": "STATUS SUGERIDO (Funcionando, Defeito, Manutenção, Backup, Aguardando retirada)",
   "observacao": "Uma breve observação adicionada automaticamente explicando a alteração feita pela IA",
-  "contador": "VALOR NUMÉRICO DO CONTADOR DE PÁGINAS EXTRAÍDO (ex: 34500 ou null)",
+  "contadorPB": "VALOR NUMÉRICO DO CONTADOR P&B EXTRAÍDO (ex: 34500 ou null)",
+  "contadorColor": "VALOR NUMÉRICO DO CONTADOR COLORIDO EXTRAÍDO (ex: 1250 ou null)",
   "swap": {
     "outgoingSerial": "NÚMERO DE SÉRIE DA IMPRESSORA QUE ESTÁ SAINDO (ex: BRJ888777)",
     "status": "STATUS DA IMPRESSORA QUE ESTÁ SAINDO (geralmente Manutenção ou Backup)",

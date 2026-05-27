@@ -23,7 +23,7 @@ import * as XLSX from 'xlsx';
 import { RotateCw } from 'lucide-react';
 
 // Importações de Serviços e Configurações
-import { auth, db, storage, ADMIN_EMAIL, printersCollectionPath } from './services/firebase';
+import { auth, db, storage, ADMIN_EMAIL, printersCollectionPath, questsCollectionPath } from './services/firebase';
 
 // Importações de Componentes
 import Notification from './components/Notification';
@@ -54,6 +54,8 @@ function AppContent() {
     const [printersLoading, setPrintersLoading] = useState(true);
     const [notification, setNotification] = useState({ message: '', type: '' });
     const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+    const [activeQuest, setActiveQuest] = useState(null);
+    const [activeQuestLoading, setActiveQuestLoading] = useState(true);
 
     // Monitoramento de Autenticação Firebase
     useEffect(() => {
@@ -71,6 +73,24 @@ function AppContent() {
         });
         return () => unsubscribe();
     }, []);
+
+    // Sincronização do status da Quest Ativa em Tempo Real
+    useEffect(() => {
+        if (!currentUser && !isGuest) return;
+        setActiveQuestLoading(true);
+        const questsCollectionRef = collection(db, questsCollectionPath);
+        const unsubscribe = onSnapshot(questsCollectionRef, (snapshot) => {
+            const activeQuestDoc = snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .find(q => q.status === 'active');
+            setActiveQuest(activeQuestDoc || null);
+            setActiveQuestLoading(false);
+        }, (error) => {
+            console.error("Erro Firestore Quests Listener:", error);
+            setActiveQuestLoading(false);
+        });
+        return () => unsubscribe();
+    }, [currentUser, isGuest]);
 
     // Sincronização do Banco de Dados Firestore
     useEffect(() => {
@@ -341,6 +361,8 @@ function AppContent() {
                                 isGuest={isGuest}
                                 printers={printers}
                                 printersLoading={printersLoading}
+                                activeQuest={activeQuest}
+                                activeQuestLoading={activeQuestLoading}
                                 handleLogout={handleLogout}
                                 handleImportFromExcel={handleImportFromExcel}
                                 showNotification={showNotification}
